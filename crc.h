@@ -16,6 +16,8 @@ enum CrcPoly {
     DNP       = 0x3d65,     // M-Bus
     IBM       = 0x8005,     // 
 
+    MMC       = 0x09,       // MMC (CRC-7)
+
     CRC32     = 0xedb88320,    // Bit reversed 0x04c11db7
                                // ISO 3309 (HDLC), ANSI X3.66, V.42,
                                // Ethernet, SATA, MPEG-2,
@@ -34,7 +36,11 @@ enum CrcPoly {
 // XOR_RESULT is used to invert the result.
 // INIT is the initialization value.
 
-template <typename Value, Value POLY, bool REVERSED, bool REFLECTED, Value XOR_RESULT, Value INIT>
+template <
+    typename Value, Value POLY,
+    bool REVERSED, bool REFLECTED, Value XOR_RESULT, Value INIT,
+    size_t WIDTH = sizeof(Value)*8
+>
 class Crc {
     Value _crcval[256];         // Precomputed CRCs for byte values
     Value _crc;
@@ -44,45 +50,37 @@ public:
     ~Crc() = default;
 
     enum { MSB = (Value(~0ULL) >> 1) + 1 };
+    enum { SHIFT = sizeof (Value) * 8 - WIDTH }; // Align to MSB
 
     // Call this first to construct table
     void init() {
-        if (REVERSED) {
-            for (Value b = 0; b < 256; b++) {
-                Value crc = b;
-                for (uint8_t i = 0; i < 8; i++) {
-                    if (crc & 1)
-                        crc = (crc >> 1) ^ POLY;
-                    else
-                        crc >>= 1;
-                }
-                _crcval[b] = crc;
+        for (int b = 0; b < 256; b++) {
+            Value crc;
+            if (REVERSED) {
+                crc = b;
+                for (uint8_t i = 0; i < 8; i++)
+                    crc = crc & 1 ? (crc >> 1) ^ POLY : crc >> 1;
+            } else {
+                crc = WIDTH <= 8 ? b : b << (WIDTH-8);
+                for (uint8_t i = 0; i < 8; i++)
+                    crc = crc & MSB ? (crc << 1) ^ (POLY << SHIFT) : crc << 1;
             }
-        } else {
-            for (Value b = 0; b < 256; b++) {
-                Value crc = b << (sizeof(Value) * 8 - 8);
-                for (uint8_t i = 0; i < 8; i++) {
-                    if (crc & MSB)
-                        crc = (crc << 1) ^ POLY;
-                    else
-                        crc <<= 1;
-                }
-                _crcval[b] = crc;
-            }
+            _crcval[b] = crc;
         }
-        _crc = INIT;
+        _crc = INIT << SHIFT;
     }
 
     // Reset without rebuilding table
-    void reset() { _crc = INIT; }
+    void reset() { _crc = INIT << SHIFT; }
 
     // Add byte
     void add(uint8_t val) {
-        if (REFLECTED) {
+        if (WIDTH <= 8)
+            _crc = _crcval[_crc ^ val];
+        else if (REFLECTED)
             _crc = _crcval[uint8_t(_crc) ^ val] ^ (_crc >> 8);
-        } else {
+        else
             _crc = _crcval[uint8_t((_crc >> 8) ^ val)] ^ (_crc << 8);
-        }
     }
 
     // Add byte sequence
@@ -91,10 +89,14 @@ public:
             add(*val++);
     }
 
-    Value end() const { return _crc ^ XOR_RESULT; }
+    Value end() const { 
+        return (_crc >> SHIFT) ^ XOR_RESULT;
+    }
 };
 
 
 typedef Crc<uint16_t, CrcPoly::CCITT, false, false, 0, 0x1d0f> CcittCrc;
 typedef Crc<uint16_t, CrcPoly::CCITT, false, false, 0xffff, 0xffff> X25Crc;
 typedef Crc<uint32_t, CrcPoly::CRC32, true, true, 0xffffffff, 0xffffffff> Crc32;
+typedef Crc<uint16_t, CrcPoly::CCITT, false, false, 0, 0> SdCardCrc16;
+typedef Crc<uint8_t, CrcPoly::MMC, false, false, 0, 0, 7> SdCardCrc7;
